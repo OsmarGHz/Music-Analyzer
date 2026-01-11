@@ -1,10 +1,11 @@
 import os
+import argparse
 import pandas as pd
 import google.genai as genai
 import lyricsgenius
 from dotenv import load_dotenv
 
-def buscar_letra(artista, cancion):
+def search_song(artista, cancion):
     """
     Busca la letra de una canción en Genius.
     Retorna: (letra, encontrada)
@@ -19,7 +20,7 @@ def buscar_letra(artista, cancion):
         print(f"  ⚠️ Error buscando letra: {e}")
         return None, False
 
-def analizar_cancion(letra, artista, cancion, filtros):
+def analyze_song(letra, artista, cancion, filtros):
     """
     Analiza la letra usando Gemini y los criterios del semáforo.
     Retorna: (clasificacion, motivos)
@@ -49,11 +50,11 @@ MOTIVOS: [Tu explicación aquí]
             model="gemini-3-pro-preview",
             contents=prompt
         )
-        return parsear_respuesta(response.text)
+        return parse_answer(response.text)
     except Exception as e:
         return "ERROR", f"Error al analizar: {e}"
 
-def parsear_respuesta(texto):
+def parse_answer(texto):
     """
     Separa la clasificación y los motivos de la respuesta de Gemini.
     Retorna: (clasificacion, motivos)
@@ -85,6 +86,18 @@ def parsear_respuesta(texto):
     
     return clasificacion, motivos
 
+def select_file():
+    parser = argparse.ArgumentParser(description='Analiza canciones usando el semáforo emocional')
+    parser.add_argument('archivo', help='Ruta al archivo CSV con las canciones')
+    args = parser.parse_args()
+    
+    if not os.path.exists(args.archivo):
+        print(f"Error: El archivo '{args.archivo}' no existe")
+        exit(1)
+    
+    return args.archivo
+
+
 # ============ CONFIGURACIÓN ============
 load_dotenv()
 
@@ -98,11 +111,16 @@ genius.skip_non_songs = True
 with open("filtros.txt", "r", encoding="utf-8") as archivo_filtros:
     filtros = archivo_filtros.read()
 
+# Obtener archivo desde argumentos
+archivo_csv = select_file()
+
 # Intenta UTF-8 primero, si falla usa latin-1
 try:
-    dataframe = pd.read_csv("Sentimental Zone.csv", encoding="utf-8")
+    dataframe = pd.read_csv(archivo_csv, encoding="utf-8")
 except UnicodeDecodeError:
-    dataframe = pd.read_csv("Sentimental Zone.csv", encoding="latin-1")
+    dataframe = pd.read_csv(archivo_csv, encoding="latin-1")
+
+print(f"Archivo: {archivo_csv}")
 
 print(f"Canciones cargadas: {len(dataframe)}")
 
@@ -117,12 +135,12 @@ for index, cancion in dataframe.iterrows():
     print(f"\n[{index + 1}/{len(dataframe)}] {track} - {artista}")
     
     # Buscar letra
-    letra, encontrada = buscar_letra(artista, track)
+    letra, encontrada = search_song(artista, track)
     
     if encontrada:
         print(f"  ✅ Letra encontrada en Genius")
         print(f"  🤖 Analizando...")
-        clasificacion, motivos = analizar_cancion(letra, artista, track, filtros)
+        clasificacion, motivos = analyze_song(letra, artista, track, filtros)
         fuente = "Genius"
         
         resultados.append({
@@ -134,23 +152,72 @@ for index, cancion in dataframe.iterrows():
         })
     else:
         print(f"  ⏭️ Auto-skip: Letra no encontrada")
-        no_encontradas.append({
+        # Guardar la fila completa del CSV original
+        no_encontradas.append(cancion.to_dict())
+
+# ============ GUARDAR RESULTADOS ============
+
+# Mapeo de semáforo a nombre de playlist
+PLAYLIST_NAMES = {
+    'VERDE': 'Everything Green',
+    'AMARILLO': 'Sentimental Zone',
+    'NARANJA': 'Catchy But Careful',
+    'ROJO': 'Banned Bangers'
+}
+
+# Obtener nombre base del archivo (sin extensión)
+nombre_base = os.path.splitext(os.path.basename(archivo_csv))[0]
+
+# --- Generar archivo .md con análisis detallado ---
+archivo_md = f"{nombre_base}.md"
+with open(archivo_md, 'w', encoding='utf-8') as f:
+    f.write(f"# Análisis: {nombre_base}\n\n")
+    f.write(f"Total de canciones analizadas: {len(resultados)}\n\n")
+    f.write("| Canción | Artista | Semáforo | Motivos |\n")
+    f.write("|---------|---------|----------|--------|\n")
+    
+    for r in resultados:
+        # Escapar pipes en los motivos para no romper la tabla
+        motivos_escaped = r['Motivos'].replace('|', '\\|').replace('\n', ' ')
+        f.write(f"| {r['Track name']} | {r['Artist name']} | {r['Clasificación']} | {motivos_escaped} |\n")
+
+print(f"\n📝 Análisis guardado → {archivo_md}")
+
+# --- Generar archivo .csv para TuneMyMusic ---
+# Crear lista con datos originales + playlist name según semáforo
+csv_resultados = []
+for index, cancion in dataframe.iterrows():
+    track = cancion['Track name']
+    artista = cancion['Artist name']
+    
+    # Buscar la clasificación de esta canción
+    clasificacion = None
+    for r in resultados:
+        if r['Track name'] == track and r['Artist name'] == artista:
+            clasificacion = r['Clasificación']
+            break
+    
+    # Solo incluir si fue analizada
+    if clasificacion and clasificacion in PLAYLIST_NAMES:
+        csv_resultados.append({
             'Track name': track,
             'Artist name': artista,
             'Album': cancion.get('Album', ''),
-            'Spotify ID': cancion.get('Spotify - id', '')
+            'Playlist name': PLAYLIST_NAMES[clasificacion],
+            'Type': cancion.get('Type', ''),
+            'ISRC': cancion.get('ISRC', ''),
+            'Spotify - id': cancion.get('Spotify - id', '')
         })
 
-# ============ GUARDAR RESULTADOS ============
-# Usar UTF-8 con BOM para que Excel lea bien los acentos
-df_resultados = pd.DataFrame(resultados)
-df_resultados.to_csv("Resultados.csv", index=False, encoding="utf-8-sig")
-print(f"\n✅ Analizadas: {len(resultados)} canciones → Resultados.csv")
+archivo_csv_salida = f"{nombre_base}_clasificado.csv"
+df_csv = pd.DataFrame(csv_resultados)
+df_csv.to_csv(archivo_csv_salida, index=False, encoding="utf-8-sig")
+print(f"📂 CSV para TuneMyMusic → {archivo_csv_salida}")
 
 # Guardar las no encontradas en CSV separado
 if no_encontradas:
     df_pendientes = pd.DataFrame(no_encontradas)
-    df_pendientes.to_csv("Pendientes_sin_letra.csv", index=False, encoding="utf-8-sig")
-    print(f"⚠️ Sin letra: {len(no_encontradas)} canciones → Pendientes_sin_letra.csv")
+    df_pendientes.to_csv("Sin_letra.csv", index=False, encoding="utf-8-sig")
+    print(f"⚠️ Sin letra: {len(no_encontradas)} canciones → Sin_letra.csv")
 
-print(f"\n🎉 ¡Listo!")
+print(f"\n🎉 ¡Listo! Analizadas: {len(resultados)} canciones")

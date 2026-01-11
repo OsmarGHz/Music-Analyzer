@@ -80,6 +80,7 @@ Venganza/sadismo/humillación SIN justificación (por placer o crueldad)
 Violencia física normalizada, celebrada o erotizada
 Placer en sufrimiento ajeno sin contexto de justicia
 Deshumanización extrema de otros
+Glorificación de cultos destructivos o rituales que promueven daño real
 NORMALIZACIÓN de abuso:
 Relaciones abusivas romantizadas como "amor verdadero"
 Manipulación/control presentados como cuidado
@@ -97,4 +98,5 @@ CASOS ESPECIALES:
 - Canciones instrumentales: Clasifica por título/contexto o marca como "N/A - Instrumental"
 - Letras ambiguas/poco claras: Si no puedes determinar, usa AMARILLO como categoría segura
 - Canciones en otros idiomas: Aplica los filtros en el idioma de la canción, antes de clasificar
+- Estética satánica/ocultista: Evalúa el MENSAJE, no la iconografía. Si es teatro/crítica social sin promover daño → clasifica según los criterios de arriba
 ═══════════════════════════════════════════════════════════════════════════

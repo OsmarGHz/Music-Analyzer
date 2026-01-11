@@ -1,3 +1,5 @@
-python -m venv venv
-venv\Scripts\activate
-pip install pandas google-genai python-dotenv lyricsgenius spotipy
+pandas
+google-genai
+python-dotenv
+lyricsgenius
+spotipy
