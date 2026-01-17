@@ -103,10 +103,11 @@ load_dotenv()
 
 geminiai = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-genius = lyricsgenius.Genius(os.getenv("GENIUS_API_KEY"))
+genius = lyricsgenius.Genius(os.getenv("GENIUS_API_KEY"), timeout=30)
 genius.verbose = True
 genius.remove_section_headers = True
 genius.skip_non_songs = True
+genius.retries = 5
 
 with open("filtros.txt", "r", encoding="utf-8") as archivo_filtros:
     filtros = archivo_filtros.read()
@@ -138,8 +139,8 @@ for index, cancion in dataframe.iterrows():
     letra, encontrada = search_song(artista, track)
     
     if encontrada:
-        print(f"  ✅ Letra encontrada en Genius")
-        print(f"  🤖 Analizando...")
+        print(f"  Letra encontrada en Genius")
+        print(f"  Analizando...")
         clasificacion, motivos = analyze_song(letra, artista, track, filtros)
         fuente = "Genius"
         
@@ -151,7 +152,7 @@ for index, cancion in dataframe.iterrows():
             'Motivos': motivos
         })
     else:
-        print(f"  ⏭️ Auto-skip: Letra no encontrada")
+        print(f"  Auto-skip: Letra no encontrada")
         # Guardar la fila completa del CSV original
         no_encontradas.append(cancion.to_dict())
 
@@ -181,7 +182,7 @@ with open(archivo_md, 'w', encoding='utf-8') as f:
         motivos_escaped = r['Motivos'].replace('|', '\\|').replace('\n', ' ')
         f.write(f"| {r['Track name']} | {r['Artist name']} | {r['Clasificación']} | {motivos_escaped} |\n")
 
-print(f"\n📝 Análisis guardado → {archivo_md}")
+print(f"\nAnálisis guardado → {archivo_md}")
 
 # --- Generar archivo .csv para TuneMyMusic ---
 # Crear lista con datos originales + playlist name según semáforo
@@ -212,12 +213,12 @@ for index, cancion in dataframe.iterrows():
 archivo_csv_salida = f"{nombre_base}_clasificado.csv"
 df_csv = pd.DataFrame(csv_resultados)
 df_csv.to_csv(archivo_csv_salida, index=False, encoding="utf-8-sig")
-print(f"📂 CSV para TuneMyMusic → {archivo_csv_salida}")
+print(f"CSV para TuneMyMusic → {archivo_csv_salida}")
 
 # Guardar las no encontradas en CSV separado
 if no_encontradas:
     df_pendientes = pd.DataFrame(no_encontradas)
-    df_pendientes.to_csv("Sin_letra.csv", index=False, encoding="utf-8-sig")
-    print(f"⚠️ Sin letra: {len(no_encontradas)} canciones → Sin_letra.csv")
+    df_pendientes.to_csv(f"Sin_letra_{nombre_base}.csv", index=False, encoding="utf-8-sig")
+    print(f"⚠️ Sin letra: {len(no_encontradas)} canciones → Sin_letra_{nombre_base}.csv")
 
 print(f"\n🎉 ¡Listo! Analizadas: {len(resultados)} canciones")
