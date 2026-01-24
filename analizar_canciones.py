@@ -1,24 +1,118 @@
 import os
 import argparse
 import pandas as pd
+import requests
+import urllib3
 import google.genai as genai
 import lyricsgenius
 from dotenv import load_dotenv
 
-def search_song(artista, cancion):
+# Silenciar warnings de SSL cuando se usa verify=False
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# ============ FUNCIONES DE BÚSQUEDA DE LETRAS ============
+
+def search_genius(artista, cancion):
     """
     Busca la letra de una canción en Genius.
-    Retorna: (letra, encontrada)
+    Retorna: (letra, encontrada, es_instrumental)
+    - es_instrumental = True cuando la canción existe pero no tiene letra
     """
     try:
+        # Temporalmente desactivar skip_non_songs para detectar instrumentales
+        genius.skip_non_songs = False
         resultado = genius.search_song(cancion, artista)
+        genius.skip_non_songs = True  # Restaurar
+        
         if resultado:
-            return resultado.lyrics, True
+            # Verificar si tiene letra real o es instrumental
+            if resultado.lyrics and len(resultado.lyrics.strip()) > 50:
+                return resultado.lyrics, True, False
+            else:
+                # Canción encontrada pero sin letra = instrumental
+                return None, False, True
         else:
-            return None, False
+            return None, False, False
     except Exception as e:
-        print(f"  ⚠️ Error buscando letra: {e}")
-        return None, False
+        print(f"    ⚠️ Error en Genius: {e}")
+        return None, False, False
+
+def search_lrclib(artista, cancion):
+    """
+    Busca la letra de una canción en LRCLIB (lrclib.net).
+    Retorna: (letra, encontrada)
+    """
+    headers = {
+        "User-Agent": "Music-Analyzer/1.0 (https://github.com/OsmarGHz/Music-Analyzer)"
+    }
+    
+    # Intentar primero con SSL, luego sin verificación si falla
+    for verify_ssl in [True, False]:
+        try:
+            # Búsqueda exacta
+            url = "https://lrclib.net/api/get"
+            params = {
+                "track_name": cancion,
+                "artist_name": artista
+            }
+            
+            response = requests.get(url, params=params, headers=headers, timeout=15, verify=verify_ssl)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("plainLyrics"):
+                    return data["plainLyrics"], True
+            
+            # Búsqueda flexible
+            url_search = "https://lrclib.net/api/search"
+            params_search = {
+                "track_name": cancion,
+                "artist_name": artista
+            }
+            
+            response = requests.get(url_search, params=params_search, headers=headers, timeout=15, verify=verify_ssl)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data and len(data) > 0 and data[0].get("plainLyrics"):
+                    return data[0]["plainLyrics"], True
+            
+            return None, False
+            
+        except requests.exceptions.SSLError:
+            if verify_ssl:
+                # Reintentar sin verificación SSL
+                continue
+            else:
+                return None, False
+        except Exception as e:
+            print(f"    Error en LRCLIB: {e}")
+            return None, False
+    
+    return None, False
+
+def search_song(artista, cancion):
+    """
+    Busca la letra de una canción en múltiples fuentes.
+    Orden: 1) Genius, 2) LRCLIB
+    Retorna: (letra, encontrada, fuente, es_instrumental)
+    """
+    # Intentar con Genius primero
+    print(f"    🔍 Buscando en Genius...")
+    letra, encontrada, es_instrumental = search_genius(artista, cancion)
+    if encontrada:
+        return letra, True, "Genius", False
+    
+    # Si es instrumental (detectado por Genius), retornar inmediatamente
+    if es_instrumental:
+        return None, False, None, True
+    
+    # Si no encuentra, intentar con LRCLIB
+    print(f"    🔍 Buscando en LRCLIB...")
+    letra, encontrada = search_lrclib(artista, cancion)
+    if encontrada:
+        return letra, True, "LRCLIB", False
+    
+    return None, False, None, False
 
 def analyze_song(letra, artista, cancion, filtros):
     """
@@ -43,6 +137,41 @@ LETRA:
 Responde EXACTAMENTE en este formato (dos líneas separadas):
 CLASIFICACION: [VERDE/AMARILLO/NARANJA/ROJO]
 MOTIVOS: [Tu explicación aquí]
+"""
+    
+    try:
+        response = geminiai.models.generate_content(
+            model="gemini-3-pro-preview",
+            contents=prompt
+        )
+        return parse_answer(response.text)
+    except Exception as e:
+        return "ERROR", f"Error al analizar: {e}"
+
+def analyze_instrumental(artista, cancion, filtros):
+    """
+    Analiza una canción instrumental usando Gemini.
+    Retorna: (clasificacion, motivos)
+    """
+    prompt = f"""
+Analiza la siguiente canción INSTRUMENTAL (sin letra) según los criterios del semáforo emocional.
+
+IMPORTANTE: 
+- Esta canción NO tiene letra, es completamente instrumental.
+- Analiza el contexto de la canción: el estilo del artista, el álbum, el género musical, reseñas de la canción desde fuentes confiables.
+- Considera si el artista o la canción tienen asociaciones problemáticas (violencia, contenido para adultos, etc.)
+- Si es una canción instrumental de un artista que normalmente tiene contenido explícito, considera ese contexto.
+- Las canciones instrumentales que son puramente musicales sin asociaciones problemáticas generalmente serían VERDE.
+
+CRITERIOS DEL SEMÁFORO:
+{filtros}
+
+CANCIÓN: {cancion}
+ARTISTA: {artista}
+
+Responde EXACTAMENTE en este formato (dos líneas separadas):
+CLASIFICACION: [VERDE/AMARILLO/NARANJA/ROJO]
+MOTIVOS: [Tu explicación aquí, mencionando que es una canción instrumental y el contexto analizado]
 """
     
     try:
@@ -128,6 +257,7 @@ print(f"Canciones cargadas: {len(dataframe)}")
 # ============ PROCESAR TODAS LAS CANCIONES ============
 resultados = []
 no_encontradas = []  # Lista para canciones sin letra
+instrumentales = []  # Lista para canciones instrumentales
 
 for index, cancion in dataframe.iterrows():
     track = cancion['Track name']
@@ -136,13 +266,53 @@ for index, cancion in dataframe.iterrows():
     print(f"\n[{index + 1}/{len(dataframe)}] {track} - {artista}")
     
     # Buscar letra
-    letra, encontrada = search_song(artista, track)
+    letra, encontrada, fuente, es_instrumental = search_song(artista, track)
     
     if encontrada:
-        print(f"  Letra encontrada en Genius")
+        print(f"  Letra encontrada en {fuente}")
+        
+        # Mostrar preview de la letra (primeras 8 líneas)
+        lineas = [l for l in letra.split('\n') if l.strip()][:8]
+        print(f"\n  --- Preview de la letra ---")
+        for linea in lineas:
+            print(f"  | {linea[:70]}{'...' if len(linea) > 70 else ''}")
+        print(f"  ----------------------------")
+        
+        # Esperar confirmación del usuario
+        respuesta = input(f"\n  [Enter]=Analizar | [s]=Skip | [m]=Manual | [i]=Instrumental | [q]=Salir: ").strip().lower()
+        
+        if respuesta == 'q':
+            print("\n  Proceso terminado por el usuario.")
+            break
+        elif respuesta == 's':
+            print(f"  Skipped por el usuario")
+            no_encontradas.append(cancion.to_dict())
+            continue
+        elif respuesta == 'i':
+            print(f"  Marcado como instrumental (VERDE)")
+            instrumentales.append(cancion.to_dict())
+            resultados.append({
+                'Track name': track,
+                'Artist name': artista,
+                'Fuente letra': 'Instrumental',
+                'Clasificación': 'VERDE',
+                'Motivos': 'Canción instrumental sin letra.'
+            })
+            continue
+        elif respuesta == 'm':
+            print(f"\n  Ingresa la letra (termina con una linea vacia):")
+            lineas_manual = []
+            while True:
+                linea = input()
+                if linea == "":
+                    break
+                lineas_manual.append(linea)
+            letra = "\n".join(lineas_manual)
+            fuente = "Manual"
+            print(f"  Letra manual recibida ({len(lineas_manual)} lineas)")
+        
         print(f"  Analizando...")
         clasificacion, motivos = analyze_song(letra, artista, track, filtros)
-        fuente = "Genius"
         
         resultados.append({
             'Track name': track,
@@ -151,10 +321,82 @@ for index, cancion in dataframe.iterrows():
             'Clasificación': clasificacion,
             'Motivos': motivos
         })
+    elif es_instrumental:
+        # Canción detectada como instrumental por Genius
+        print(f"  🎵 Esta canción es instrumental (sin letra)")
+        respuesta = input(f"  [Enter]=Analizar instrumental con Gemini | [v]=Verde directo | [s]=Skip | [q]=Salir: ").strip().lower()
+        
+        if respuesta == 'q':
+            print("\n  Proceso terminado por el usuario.")
+            break
+        elif respuesta == 's':
+            print(f"  Skipped por el usuario")
+            no_encontradas.append(cancion.to_dict())
+            continue
+        elif respuesta == 'v':
+            print(f"  Marcado como instrumental (VERDE)")
+            instrumentales.append(cancion.to_dict())
+            resultados.append({
+                'Track name': track,
+                'Artist name': artista,
+                'Fuente letra': 'Instrumental',
+                'Clasificación': 'VERDE',
+                'Motivos': 'Canción instrumental sin letra.'
+            })
+        else:
+            # Analizar instrumental con Gemini (sin letra)
+            print(f"  Analizando instrumental con Gemini...")
+            clasificacion, motivos = analyze_instrumental(artista, track, filtros)
+            instrumentales.append(cancion.to_dict())
+            resultados.append({
+                'Track name': track,
+                'Artist name': artista,
+                'Fuente letra': 'Instrumental',
+                'Clasificación': clasificacion,
+                'Motivos': motivos
+            })
     else:
-        print(f"  Auto-skip: Letra no encontrada")
-        # Guardar la fila completa del CSV original
-        no_encontradas.append(cancion.to_dict())
+        print(f"  Letra no encontrada en ninguna fuente")
+        respuesta = input(f"  [m]=Ingresar manual | [i]=Instrumental | [s]=Skip | [q]=Salir: ").strip().lower()
+        
+        if respuesta == 'q':
+            print("\n  Proceso terminado por el usuario.")
+            break
+        elif respuesta == 'm':
+            print(f"\n  Ingresa la letra (termina con una linea vacia):")
+            lineas_manual = []
+            while True:
+                linea = input()
+                if linea == "":
+                    break
+                lineas_manual.append(linea)
+            letra = "\n".join(lineas_manual)
+            fuente = "Manual"
+            print(f"  Letra manual recibida ({len(lineas_manual)} lineas)")
+            
+            print(f"  Analizando...")
+            clasificacion, motivos = analyze_song(letra, artista, track, filtros)
+            
+            resultados.append({
+                'Track name': track,
+                'Artist name': artista,
+                'Fuente letra': fuente,
+                'Clasificación': clasificacion,
+                'Motivos': motivos
+            })
+        elif respuesta == 'i':
+            print(f"  Marcado como instrumental (VERDE)")
+            instrumentales.append(cancion.to_dict())
+            resultados.append({
+                'Track name': track,
+                'Artist name': artista,
+                'Fuente letra': 'Instrumental',
+                'Clasificación': 'VERDE',
+                'Motivos': 'Canción instrumental sin letra.'
+            })
+        else:
+            # Skip por defecto
+            no_encontradas.append(cancion.to_dict())
 
 # ============ GUARDAR RESULTADOS ============
 
@@ -219,6 +461,6 @@ print(f"CSV para TuneMyMusic → {archivo_csv_salida}")
 if no_encontradas:
     df_pendientes = pd.DataFrame(no_encontradas)
     df_pendientes.to_csv(f"Sin_letra_{nombre_base}.csv", index=False, encoding="utf-8-sig")
-    print(f"⚠️ Sin letra: {len(no_encontradas)} canciones → Sin_letra_{nombre_base}.csv")
+    print(f"Sin letra: {len(no_encontradas)} canciones → Sin_letra_{nombre_base}.csv")
 
-print(f"\n🎉 ¡Listo! Analizadas: {len(resultados)} canciones")
+print(f"\n¡Listo! Analizadas: {len(resultados)} canciones")
